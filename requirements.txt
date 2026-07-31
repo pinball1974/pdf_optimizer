@@ -1,0 +1,5 @@
+pymupdf>=1.26
+opencv-python-headless>=4.10
+numpy>=2.0
+pyobjc-framework-Vision>=10.0 ; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0 ; sys_platform == "darwin"

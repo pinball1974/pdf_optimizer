@@ -1,0 +1,11 @@
+venv/
+venv.nosync/
+__pycache__/
+*.pyc
+*.analysis.json
+.DS_Store
+.claude/
+# 책 스캔본은 저작권 문제로 저장소에 포함하지 않음
+*.pdf
+*.txt
+!requirements.txt
