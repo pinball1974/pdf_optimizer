@@ -23,25 +23,80 @@
 - 일러스트/표지/목차 페이지는 자동 감지해 기울기 보정을 건너뛰고 콘텐츠 기준
   중앙 배치.
 
+## 요구 사항
+
+- **macOS** — OCR 텍스트 레이어가 macOS 내장 Apple Vision을 사용한다.
+  다른 OS에서도 기하 보정(기울기·여백·판형)은 동작하며, OCR만 자동으로
+  생략된다.
+- **Python 3.11 이상** (3.13에서 개발·테스트됨). 없다면 Homebrew로:
+
+  ```bash
+  brew install python@3.13
+  ```
+
 ## 설치
 
 ```bash
+# 1. 저장소 받기
+git clone https://github.com/pinball1974/pdf_optimizer.git
+cd pdf_optimizer
+
+# 2. 가상환경 생성
 python3.13 -m venv venv
+
+# 3. 의존성 설치 (pymupdf, opencv, numpy, pyobjc-Vision)
 venv/bin/pip install -r requirements.txt
 ```
 
-참고: venv에는 절대경로가 박혀 있어 프로젝트 폴더를 옮기면 깨진다. 폴더를
-이동한 뒤에는 기존 venv를 지우고 위 명령으로 새로 만들 것. (iCloud Drive
-안에서 쓸 경우에만 이름을 `venv.nosync`로 해서 동기화를 제외하면 된다.)
-
-## 사용법
+설치 확인:
 
 ```bash
-venv/bin/python -m pdfopt "책.pdf"                  # -> 책_optimized.pdf
-venv/bin/python -m pdfopt "책.pdf" --pages 40-45    # 일부 페이지만 테스트
-venv/bin/python -m pdfopt "책.pdf" --no-ocr --jpeg-quality 90
-venv/bin/python -m pdfopt "만화.pdf" --comic        # 만화책 모드
+venv/bin/python -m pdfopt --help
 ```
+
+## 실행
+
+가상환경을 활성화해서 쓰거나(`source venv/bin/activate` 후 `python -m
+pdfopt ...`), 아래처럼 venv 경로로 바로 실행한다.
+
+**일반 책 (텍스트 위주)**:
+
+```bash
+venv/bin/python -m pdfopt "책.pdf"
+```
+
+결과물 두 개가 입력 파일과 같은 폴더에 생긴다:
+
+- `책_optimized.pdf` — 기울기 보정 + 고정폭 중앙정렬 + 뒷비침 제거 +
+  검색 가능한 OCR 레이어가 들어간 PDF
+- `책.txt` — 단락 내 강제 개행을 제거하고 문단 구조를 복원한 텍스트
+
+**만화책**:
+
+```bash
+venv/bin/python -m pdfopt "만화.pdf" --comic
+```
+
+`만화_optimized.pdf` 하나만 생성된다(만화 모드는 OCR·txt 기본 꺼짐).
+
+**전체 변환 전에 일부 페이지로 미리 확인**:
+
+```bash
+venv/bin/python -m pdfopt "책.pdf" --pages 40-45 -o /tmp/미리보기.pdf
+```
+
+**자주 쓰는 조합**:
+
+```bash
+venv/bin/python -m pdfopt "책.pdf" --no-ocr             # OCR 없이 빠르게
+venv/bin/python -m pdfopt "책.pdf" --jpeg-quality 90    # 화질 우선
+venv/bin/python -m pdfopt "만화.pdf" --comic --ocr      # 만화 + 말풍선 검색
+```
+
+첫 실행 시 페이지 분석 결과가 `<입력>.analysis.json`에 캐시되므로, 옵션을
+바꿔 재실행하면 1차 분석 패스를 건너뛰어 훨씬 빠르다(입력 PDF가 바뀌면
+자동으로 다시 분석한다). 처리 속도는 Apple Silicon 기준 200쪽 책 한 권에
+OCR 포함 30초 내외.
 
 ## 만화책 모드 (`--comic`)
 
