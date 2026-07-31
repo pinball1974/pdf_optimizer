@@ -44,13 +44,22 @@ def main(argv=None):
                    help="side margin as fraction of text width (default 0.05)")
     p.add_argument("--jpeg-quality", type=int, default=82, help="default 82")
     p.add_argument("--workers", type=int, help="parallel workers (default: cores-2)")
+    p.add_argument("--comic", action="store_true",
+                   help="comic-book mode: de-skew from panel-frame lines, keep "
+                        "page borders (no column re-layout); all pages trimmed "
+                        "to the book's smallest post-rotation size, cutting "
+                        "from whichever side has more blank margin")
     p.add_argument("--no-ocr", action="store_true", help="skip the OCR text layer")
+    p.add_argument("--ocr", action="store_true",
+                   help="force the OCR layer on (comic mode has it off by default)")
     p.add_argument("--no-txt", action="store_true",
                    help="skip the paragraph-reflowed <input>.txt export")
     p.add_argument("--no-clean", action="store_true", help="keep original tone "
                    "(no show-through removal)")
-    p.add_argument("--knee", default="150,205",
-                   help="show-through knee 'k0,k1' in gray levels (default 150,205)")
+    p.add_argument("--knee", default=None,
+                   help="show-through knee 'k0,k1' in gray levels (default "
+                        "150,205; comic mode: tone cleanup is OFF unless this "
+                        "is given — screentone lives in the light grays)")
     p.add_argument("--no-cache", action="store_true",
                    help="ignore/skip the .analysis.json cache")
     args = p.parse_args(argv)
@@ -61,15 +70,29 @@ def main(argv=None):
     out_path = args.output or base + "_optimized.pdf"
     cache = None if args.no_cache else base + ".analysis.json"
 
-    try:
-        parts = [int(v) for v in args.knee.split(",")]
-        if len(parts) != 2:
-            raise ValueError
-        knee0, knee1 = parts
-        if not (0 <= knee0 < knee1 <= 255):
-            raise ValueError
-    except ValueError:
-        p.error(f"--knee must be 'k0,k1' with 0 <= k0 < k1 <= 255, got '{args.knee}'")
+    knee0, knee1 = 150, 205
+    if args.knee is not None:
+        try:
+            parts = [int(v) for v in args.knee.split(",")]
+            if len(parts) != 2:
+                raise ValueError
+            knee0, knee1 = parts
+            if not (0 <= knee0 < knee1 <= 255):
+                raise ValueError
+        except ValueError:
+            p.error(f"--knee must be 'k0,k1' with 0 <= k0 < k1 <= 255, "
+                    f"got '{args.knee}'")
+
+    if args.comic:
+        # comics: tone cleanup only when explicitly requested, OCR opt-in,
+        # no paragraph txt (speech bubbles don't reflow meaningfully)
+        clean_tone = args.knee is not None and not args.no_clean
+        use_ocr = args.ocr
+        want_txt = False
+    else:
+        clean_tone = not args.no_clean
+        use_ocr = not args.no_ocr
+        want_txt = not args.no_txt
 
     try:
         pages = parse_pages(args.pages) if args.pages else None
@@ -81,12 +104,12 @@ def main(argv=None):
         res = convert(
             args.input, out_path,
             dpi=args.dpi, margin=args.margin, jpeg_quality=args.jpeg_quality,
-            use_ocr=not args.no_ocr, clean_tone=not args.no_clean,
+            use_ocr=use_ocr, clean_tone=clean_tone,
             knee0=knee0, knee1=knee1, workers=args.workers,
-            pages=pages, cache_path=cache,
-            txt_path=None if args.no_txt else os.path.join(
+            pages=pages, cache_path=cache, comic=args.comic,
+            txt_path=os.path.join(
                 os.path.dirname(os.path.abspath(out_path)),
-                os.path.basename(base) + ".txt"))
+                os.path.basename(base) + ".txt") if want_txt else None)
     except (ValueError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

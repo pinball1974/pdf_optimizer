@@ -21,7 +21,11 @@ import cv2
 import fitz
 import numpy as np
 
+import math
+
 from . import ocr as ocr_mod
+from .comic import (MAX_COMIC_ANGLE, allocate_trim, comic_stats, deskew_crop,
+                    edge_margins, estimate_angle, inscribed_size)
 from .deskew import deskew
 from .geometry import binarize_clean, binarize_raw, page_metrics, render_gray
 from .layout import canvas_px, global_stats, place
@@ -42,9 +46,51 @@ def _init_worker(pdf_path, settings):
 
 def _analyze_one(idx):
     try:
+        if _worker["settings"].get("mode") == "comic":
+            page = _worker["doc"][idx]
+            img = render_gray(page, 150)
+            ang, support = estimate_angle(img, 150)
+            clamped = abs(ang) > MAX_COMIC_ANGLE
+            if clamped:
+                ang = math.copysign(MAX_COMIC_ANGLE, ang)
+            iw, ih = inscribed_size(page.rect.width, page.rect.height, ang)
+            return idx, dict(kind="comic", angle=round(ang, 3), clamped=clamped,
+                             support=round(support, 1),
+                             page_w=page.rect.width, page_h=page.rect.height,
+                             insc_w=round(iw, 2), insc_h=round(ih, 2))
         return idx, page_metrics(_worker["doc"][idx], dpi=150)
     except Exception as e:
         return idx, dict(kind="error", error=str(e))
+
+
+def _convert_one_comic(idx):
+    s = _worker["settings"]
+    dpi = s["dpi"]
+    try:
+        img = render_gray(_worker["doc"][idx], dpi)
+        img = deskew_crop(img, s["angles"].get(str(idx), 0.0))
+        if s["clean_tone"]:
+            img = clean(img, s["knee0"], s["knee1"])
+        h, w = img.shape
+        tw = int(round(s["gs"]["target_w"] * dpi / 72.0))
+        th = int(round(s["gs"]["target_h"] * dpi / 72.0))
+        mL, mR, mT, mB = edge_margins(img)
+        tl, _tr = allocate_trim(max(0, w - tw), mL, mR)
+        tt, _tb = allocate_trim(max(0, h - th), mT, mB)
+        # exact target size: trim (or, on sub-pixel rounding, pad) via a canvas
+        canvas = np.full((th, tw), 255, np.uint8)
+        cw, chh = min(tw, w), min(th, h)
+        dx, dy = (tw - cw) // 2, (th - chh) // 2
+        canvas[dy : dy + chh, dx : dx + cw] = img[tt : tt + chh, tl : tl + cw]
+        ocr_lines = ocr_mod.recognize(canvas) if s["ocr"] else []
+        ok, jpg = cv2.imencode(".jpg", canvas,
+                               [cv2.IMWRITE_JPEG_QUALITY, s["jpeg_quality"]])
+        if not ok:
+            raise RuntimeError("jpeg encode failed")
+        return idx, dict(jpg=jpg.tobytes(), ocr=ocr_lines, deskew={},
+                         shape=canvas.shape)
+    except Exception as e:
+        return idx, dict(error=str(e))
 
 
 def _convert_one(idx):
@@ -117,13 +163,15 @@ def _run_pool(pdf_path, settings, indices, fn, workers, label):
     return results
 
 
-def analyze(pdf_path: str, cache_path: str | None, workers: int) -> dict[int, dict]:
+def analyze(pdf_path: str, cache_path: str | None, workers: int,
+            mode: str = "text") -> dict[int, dict]:
     src_mtime = os.path.getmtime(pdf_path)
     if cache_path and os.path.exists(cache_path):
         try:
             with open(cache_path) as f:
                 cached = json.load(f)
-            if cached.get("_mtime") == src_mtime:
+            if (cached.get("_mtime") == src_mtime
+                    and cached.get("_mode", "text") == mode):
                 print(f"analysis cache hit: {cache_path}")
                 return {int(k): v for k, v in cached["pages"].items()}
         except (json.JSONDecodeError, KeyError):
@@ -132,7 +180,7 @@ def analyze(pdf_path: str, cache_path: str | None, workers: int) -> dict[int, di
     n = doc.page_count
     doc.close()
     print(f"pass 1/2: analyzing {n} pages ...")
-    records = _run_pool(pdf_path, {}, list(range(n)), _analyze_one,
+    records = _run_pool(pdf_path, {"mode": mode}, list(range(n)), _analyze_one,
                         workers, "analyze")
     bad = sorted(i for i, r in records.items() if r.get("kind") == "error")
     if bad:
@@ -143,7 +191,7 @@ def analyze(pdf_path: str, cache_path: str | None, workers: int) -> dict[int, di
         # mtime captured BEFORE the pass: if the file was replaced meanwhile,
         # the next run sees a mismatch instead of reusing stale geometry
         with open(cache_path, "w") as f:
-            json.dump({"_mtime": src_mtime,
+            json.dump({"_mtime": src_mtime, "_mode": mode,
                        "pages": {str(k): v for k, v in records.items()}}, f)
     return records
 
@@ -192,7 +240,7 @@ def convert(pdf_path: str, out_path: str, dpi: int = 300, margin: float = 0.05,
             jpeg_quality: int = 82, use_ocr: bool = True, clean_tone: bool = True,
             knee0: int = 150, knee1: int = 205, workers: int | None = None,
             pages: list[int] | None = None, cache_path: str | None = None,
-            txt_path: str | None = None) -> dict:
+            txt_path: str | None = None, comic: bool = False) -> dict:
     workers = workers or max(1, (os.cpu_count() or 4) - 2)
     doc = fitz.open(pdf_path)
     n = doc.page_count
@@ -206,10 +254,23 @@ def convert(pdf_path: str, out_path: str, dpi: int = 300, margin: float = 0.05,
                 f"page(s) out of range 1-{n}: {[i + 1 for i in outside]}")
     indices = pages if pages is not None else list(range(n))
 
-    records = analyze(pdf_path, cache_path, workers)
-    gs = global_stats(records, margin)
-    print(f"canvas: {gs['canvas_w']:.1f} x {gs['canvas_h']:.1f} pt "
-          f"(text width {gs['text_width']:.1f} pt, margin {gs['margin']:.1f} pt)")
+    mode = "comic" if comic else "text"
+    records = analyze(pdf_path, cache_path, workers, mode)
+    if comic:
+        gs = comic_stats(records)
+        gs["canvas_w"], gs["canvas_h"] = gs["target_w"], gs["target_h"]
+        shrink_w = 100 * (1 - gs["target_w"] / gs["median_w"])
+        shrink_h = 100 * (1 - gs["target_h"] / gs["median_h"])
+        print(f"uniform page: {gs['target_w']:.1f} x {gs['target_h']:.1f} pt "
+              f"(median page -{shrink_w:.1f}% / -{shrink_h:.1f}%)")
+        if gs["clamped"]:
+            print(f"WARNING: skew above {MAX_COMIC_ANGLE} deg measured on "
+                  f"page(s) {gs['clamped'][:10]} — correction capped there",
+                  file=sys.stderr)
+    else:
+        gs = global_stats(records, margin)
+        print(f"canvas: {gs['canvas_w']:.1f} x {gs['canvas_h']:.1f} pt "
+              f"(text width {gs['text_width']:.1f} pt, margin {gs['margin']:.1f} pt)")
 
     if use_ocr and not ocr_mod.AVAILABLE:
         print("WARNING: pyobjc Vision not available -> OCR layer skipped",
@@ -218,11 +279,15 @@ def convert(pdf_path: str, out_path: str, dpi: int = 300, margin: float = 0.05,
 
     settings = dict(dpi=dpi, gs=gs, jpeg_quality=jpeg_quality, ocr=use_ocr,
                     clean_tone=clean_tone, knee0=knee0, knee1=knee1,
+                    mode=mode,
+                    angles={str(i): r.get("angle", 0.0)
+                            for i, r in records.items()},
                     kinds={str(i): r.get("kind", "text")
                            for i, r in records.items()})
     print(f"pass 2/2: converting {len(indices)} pages "
           f"(dpi {dpi}, {workers} workers, ocr {'on' if use_ocr else 'off'}) ...")
-    results = _run_pool(pdf_path, settings, indices, _convert_one,
+    results = _run_pool(pdf_path, settings, indices,
+                        _convert_one_comic if comic else _convert_one,
                         workers, "convert")
 
     # blank fallback pages must get the same px-quantized size as real ones
@@ -250,7 +315,7 @@ def convert(pdf_path: str, out_path: str, dpi: int = 300, margin: float = 0.05,
     out.close()
     size_mb = os.path.getsize(out_path) / 1e6
     print(f"wrote {out_path} ({size_mb:.1f} MB)")
-    if txt_path and use_ocr:
+    if txt_path and use_ocr and not comic:
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(reflow(pages_lines))
         print(f"wrote {txt_path}")
