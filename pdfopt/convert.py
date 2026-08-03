@@ -12,16 +12,17 @@ would bleach them.
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import sys
 import time
+from collections import Counter
 from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, as_completed
 
 import cv2
 import fitz
 import numpy as np
-
-import math
 
 from . import ocr as ocr_mod
 from .comic import (MAX_COMIC_ANGLE, allocate_trim, comic_stats, deskew_crop,
@@ -116,8 +117,6 @@ def _convert_one(idx):
             ink_bin = raw_bin
         canvas = place(img, line_bin, ink_bin, dpi, s["gs"])
         ocr_lines = ocr_mod.recognize(canvas) if s["ocr"] else []
-        if ocr_lines:
-            ocr_lines = _drop_repeats(ocr_lines, canvas.shape)
         quality = s["jpeg_quality"] if kind == "text" else min(95, s["jpeg_quality"] + 10)
         ok, jpg = cv2.imencode(".jpg", canvas, [cv2.IMWRITE_JPEG_QUALITY, quality])
         if not ok:
@@ -128,17 +127,78 @@ def _convert_one(idx):
         return idx, dict(error=str(e))
 
 
-def _drop_repeats(lines, shape):
-    """Drop running headers and folio numbers from the OCR of a body-text
-    page: short lines in the outer vertical bands are page furniture, not
-    content (wide footnote blocks near the bottom survive the width test)."""
+_BAND = 0.12          # outer fraction of page height treated as header/footer zone
+_FURNITURE_MIN = 4    # same banded text on this many pages = page furniture
+
+
+def _norm_furniture(text: str) -> str:
+    """Normalize a candidate running-head/footer: page numbers change every
+    page — and OCR often misreads them as Latin letters ('IIO' for 110,
+    'oC' for 96) — so digits, Latin letters and separators are all stripped
+    before comparing."""
+    return re.sub(r"[\dA-Za-z\s.,·・\-—–|()\[\]{}:;'\"~*]+", "", text)
+
+
+def _in_band(ln, shape):
+    ch, cw = shape
+    yc = (ln["y0"] + ln["y1"]) / 2
+    return yc < _BAND * ch or yc > (1 - _BAND) * ch
+
+
+def _collect_furniture(pages: list[tuple[list, tuple]]) -> dict[str, float]:
+    """Find running heads/footers: texts that repeat across many pages AT A
+    CONSISTENT vertical position near the top or bottom. Book/chapter titles
+    attached to page numbers ('364 화요일의 여자들') are too wide for a width
+    rule and can sit outside any fixed band (the canvas can be taller than
+    the source page), but real prose never repeats position-locked.
+
+    Returns {normalized_text: median relative y}. A chapter opener carrying
+    the same words mid-page stays safe because dropping later requires the
+    line to sit near this median position."""
+    occ: dict[str, list[float]] = {}
+    for lines, shape in pages:
+        ch, cw = shape
+        seen = set()
+        for ln in lines:
+            if (ln["x1"] - ln["x0"]) > 0.6 * cw:
+                continue
+            key = _norm_furniture(ln["text"])
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            occ.setdefault(key, []).append(((ln["y0"] + ln["y1"]) / 2.0) / ch)
+    furniture = {}
+    for key, ys in occ.items():
+        if len(ys) < _FURNITURE_MIN:
+            continue
+        y = np.asarray(ys)
+        med = float(np.median(y))
+        if not (med < 0.25 or med > 0.72):
+            continue  # repeats mid-page: content, not furniture
+        if np.mean(np.abs(y - med) < 0.05) >= 0.7:
+            furniture[key] = med
+    return furniture
+
+
+def _drop_furniture(lines, shape, furniture: dict[str, float]):
+    """Remove page furniture from one page's OCR lines: repeated texts at
+    their locked position, bare page numbers, and lone narrow running heads."""
     ch, cw = shape
     out = []
     for ln in lines:
-        yc = (ln["y0"] + ln["y1"]) / 2
-        small = (ln["x1"] - ln["x0"]) < 0.25 * cw
-        if small and (yc < 0.12 * ch or yc > 0.88 * ch):
+        width = ln["x1"] - ln["x0"]
+        rely = ((ln["y0"] + ln["y1"]) / 2.0) / ch
+        key = _norm_furniture(ln["text"])
+        outer = rely < 0.3 or rely > 0.7
+        # tolerance 0.10: pages whose global shift was clamped by tall content
+        # carry their footer up to ~0.08 away from the book-wide position
+        if key and width < 0.6 * cw and key in furniture \
+                and abs(rely - furniture[key]) < 0.10:
             continue
+        if not key and outer and width < 0.15 * cw:
+            continue  # digits/separators only: folio number
+        if _in_band(ln, shape) and width < 0.25 * cw:
+            continue  # narrow one-off running head in the strict band
         out.append(ln)
     return out
 
@@ -293,6 +353,13 @@ def convert(pdf_path: str, out_path: str, dpi: int = 300, margin: float = 0.05,
     # blank fallback pages must get the same px-quantized size as real ones
     cpx_w, cpx_h = canvas_px(gs, dpi)
     blank_w, blank_h = cpx_w * 72.0 / dpi, cpx_h * 72.0 / dpi
+
+    furniture = _collect_furniture(
+        [(rec["ocr"], rec["shape"]) for rec in results.values()
+         if rec.get("ocr") and rec.get("shape")])
+    for rec in results.values():
+        if rec.get("ocr") and rec.get("shape"):
+            rec["ocr"] = _drop_furniture(rec["ocr"], rec["shape"], furniture)
 
     out = fitz.open()
     errors = []
