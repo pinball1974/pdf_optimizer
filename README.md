@@ -44,25 +44,31 @@ cd pdf_optimizer
 # 2. 가상환경 생성
 python3.13 -m venv venv
 
-# 3. 의존성 설치 (pymupdf, opencv, numpy, pyobjc-Vision)
-venv/bin/pip install -r requirements.txt
+# 3. 패키지 설치 (의존성 포함: pymupdf, opencv, numpy, pyobjc-Vision)
+venv/bin/pip install -e .
 ```
 
 설치 확인:
 
 ```bash
-venv/bin/python -m pdfopt --help
+venv/bin/pdfopt --help
 ```
 
 ## 실행
 
-가상환경을 활성화해서 쓰거나(`source venv/bin/activate` 후 `python -m
-pdfopt ...`), 아래처럼 venv 경로로 바로 실행한다.
+설치하면 `pdfopt` 명령이 생겨 **어느 폴더에서든** 실행할 수 있다.
+가상환경을 활성화(`source venv/bin/activate`)했다면 `pdfopt`만 치면 되고,
+활성화 없이 쓰려면 `<프로젝트 경로>/venv/bin/pdfopt`로 부르면 된다.
+
+변환할 PDF는 아무 폴더에 있어도 된다 — 파일 경로를 인자로 넘기면 되고,
+결과물은 기본적으로 **입력 파일과 같은 폴더**에 생긴다. 경로에 공백이나
+한글이 있으면 따옴표로 감싼다 (Finder에서 파일을 터미널 창으로 드래그하면
+경로가 자동 입력된다).
 
 **일반 책 (텍스트 위주)**:
 
 ```bash
-venv/bin/python -m pdfopt "책.pdf"
+pdfopt ~/Downloads/책.pdf
 ```
 
 결과물 두 개가 입력 파일과 같은 폴더에 생긴다:
@@ -74,7 +80,7 @@ venv/bin/python -m pdfopt "책.pdf"
 **만화책**:
 
 ```bash
-venv/bin/python -m pdfopt "만화.pdf" --comic
+pdfopt ~/Downloads/만화.pdf --comic
 ```
 
 `만화_optimized.pdf` 하나만 생성된다(만화 모드는 OCR·txt 기본 꺼짐).
@@ -82,15 +88,17 @@ venv/bin/python -m pdfopt "만화.pdf" --comic
 **전체 변환 전에 일부 페이지로 미리 확인**:
 
 ```bash
-venv/bin/python -m pdfopt "책.pdf" --pages 40-45 -o /tmp/미리보기.pdf
+pdfopt ~/Downloads/책.pdf --pages 40-45 -o /tmp/미리보기.pdf
 ```
+
+`-o`로 출력 위치를 바꾸면 txt도 그 폴더에 생긴다.
 
 **자주 쓰는 조합**:
 
 ```bash
-venv/bin/python -m pdfopt "책.pdf" --no-ocr             # OCR 없이 빠르게
-venv/bin/python -m pdfopt "책.pdf" --jpeg-quality 90    # 화질 우선
-venv/bin/python -m pdfopt "만화.pdf" --comic --ocr      # 만화 + 말풍선 검색
+pdfopt 책.pdf --no-ocr             # OCR 없이 빠르게
+pdfopt 책.pdf --jpeg-quality 90    # 화질 우선
+pdfopt 만화.pdf --comic --ocr      # 만화 + 말풍선 검색
 ```
 
 첫 실행 시 페이지 분석 결과가 `<입력>.analysis.json`에 캐시되므로, 옵션을

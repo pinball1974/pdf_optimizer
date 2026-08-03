@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdfopt"
+version = "0.1.0"
+description = "Scanned-book PDF optimizer for tablet reading: de-skew, uniform re-centering, show-through cleanup, Apple Vision OCR"
+requires-python = ">=3.11"
+dependencies = [
+    "pymupdf>=1.26",
+    "opencv-python-headless>=4.10",
+    "numpy>=2.0",
+    'pyobjc-framework-Vision>=10.0; sys_platform == "darwin"',
+    'pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"',
+]
+
+[project.scripts]
+pdfopt = "pdfopt.cli:main"
+
+[tool.setuptools]
+packages = ["pdfopt"]
