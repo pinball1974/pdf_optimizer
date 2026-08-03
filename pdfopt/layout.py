@@ -11,7 +11,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .geometry import detect_lines, ink_bbox, split_regions
+from .geometry import content_bbox, detect_lines, split_regions
 
 
 def global_stats(records: dict[int, dict], margin_frac: float = 0.05) -> dict:
@@ -62,8 +62,9 @@ def place(img: np.ndarray, line_bin: np.ndarray, ink_bin: np.ndarray,
     cw, ch = canvas_px(gs, dpi)
     canvas = np.full((ch, cw), 255, np.uint8)
 
-    full = split_regions(detect_lines(line_bin, dpi), w, h)["full"]
-    bbox = ink_bbox(ink_bin)
+    lines = detect_lines(line_bin, dpi)
+    full = split_regions(lines, w, h)["full"]
+    bbox = content_bbox(ink_bin, lines, dpi)
     if bbox is None:
         return canvas  # blank page stays blank
     bx0, by0, bx1, by1 = bbox

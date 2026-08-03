@@ -109,6 +109,39 @@ def ink_bbox(binimg: np.ndarray, min_area_px: int = 20) -> tuple | None:
     return (x0, y0, x1, y1)
 
 
+def content_bbox(binimg: np.ndarray, lines: list[dict], dpi: int) -> tuple | None:
+    """Bounding box of REAL content: detected line boxes plus ink components
+    near them. Isolated specks and scanner edge strips far from any text are
+    excluded — letting them into the bbox skews placement (false oversized
+    extent -> needless shrink / off-center clamping) and inflates the global
+    crop band. Pages with no detected lines fall back to the ink bbox away
+    from a thin edge band."""
+    h, w = binimg.shape
+    e = max(3, int(0.015 * max(h, w)))
+    inner = binimg.copy()
+    inner[:e, :] = 0
+    inner[-e:, :] = 0
+    inner[:, :e] = 0
+    inner[:, -e:] = 0
+    if not lines:
+        return ink_bbox(inner, min_area_px=30)
+    x0 = min(l["x0"] for l in lines)
+    y0 = min(l["y0"] for l in lines)
+    x1 = max(l["x1"] for l in lines)
+    y1 = max(l["y1"] for l in lines)
+    m = int(0.03 * max(h, w))
+    ex0, ey0, ex1, ey1 = x0 - m, y0 - m, x1 + m, y1 + m
+    n, _lab, stats, _ = cv2.connectedComponentsWithStats(inner)
+    for i in range(1, n):
+        cx, cy, cw, ch, area = stats[i]
+        if area < 30:
+            continue
+        if cx < ex1 and cx + cw > ex0 and cy < ey1 and cy + ch > ey0:
+            x0, y0 = min(x0, cx), min(y0, cy)
+            x1, y1 = max(x1, cx + cw), max(y1, cy + ch)
+    return (x0, y0, x1, y1)
+
+
 def page_metrics(page: "fitz.Page", dpi: int = 150) -> dict:
     """One analysis record per page. Lengths in PDF points."""
     img = render_gray(page, dpi)
@@ -128,7 +161,7 @@ def page_metrics(page: "fitz.Page", dpi: int = 150) -> dict:
         has_header=bool(regions["header"]),
         has_footer=bool(regions["footer"]),
     )
-    bbox = ink_bbox(binimg)
+    bbox = content_bbox(binimg, lines, dpi)
     rec["ink_bbox"] = [round(v * px2pt, 2) for v in bbox] if bbox else None
 
     if len(full) >= 3:

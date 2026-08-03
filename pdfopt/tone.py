@@ -18,4 +18,17 @@ def knee_lut(knee0: int = 150, knee1: int = 205) -> np.ndarray:
 
 
 def clean(img: np.ndarray, knee0: int = 150, knee1: int = 205) -> np.ndarray:
+    """Suppress show-through, adapting the knee to the page's ink darkness.
+
+    Lightly-printed scans have glyph strokes well above the default knee0
+    (e.g. median ink gray ~170 vs the assumed <150), and a fixed knee would
+    erode them. The knee is therefore only ever RAISED: at least 40 levels
+    above the page's median ink gray, never lowered below the caller's value.
+    """
+    _, mask = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    ink = img[mask > 0]
+    if ink.size >= 500:
+        k0 = int(max(knee0, min(230, float(np.median(ink)) + 40)))
+        knee1 = min(255, max(knee1, k0 + 50))
+        knee0 = k0
     return cv2.LUT(img, knee_lut(knee0, knee1))
