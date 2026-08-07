@@ -35,9 +35,11 @@ def main(argv=None):
                     "reading: per-line de-skew (handles top-vs-bottom angle "
                     "drift), uniform text-width canvas, show-through cleanup, "
                     "searchable Korean OCR layer (Apple Vision).")
-    p.add_argument("input", help="scanned book PDF")
+    p.add_argument("input", nargs="+",
+                   help="scanned book PDF(s) — multiple files or a shell "
+                        "glob like *.pdf are converted one after another")
     p.add_argument("-o", "--output", help="output PDF path "
-                   "(default: <input>_optimized.pdf)")
+                   "(default: <input>_optimized.pdf; single input only)")
     p.add_argument("--pages", help="1-indexed subset like '5,10-12' (for testing)")
     p.add_argument("--dpi", type=int, default=300, help="processing DPI (default 300)")
     p.add_argument("--margin", type=float, default=0.05,
@@ -64,11 +66,19 @@ def main(argv=None):
                    help="ignore/skip the .analysis.json cache")
     args = p.parse_args(argv)
 
-    if not os.path.exists(args.input):
-        p.error(f"not found: {args.input}")
-    base, _ = os.path.splitext(args.input)
-    out_path = args.output or base + "_optimized.pdf"
-    cache = None if args.no_cache else base + ".analysis.json"
+    inputs = []
+    for f in dict.fromkeys(args.input):  # dedupe, keep order
+        if f.lower().endswith("_optimized.pdf"):
+            print(f"skip (이미 변환된 결과물): {f}", file=sys.stderr)
+            continue
+        inputs.append(f)
+    if not inputs:
+        p.error("no input files left to convert")
+    if args.output and len(inputs) > 1:
+        p.error("-o works with a single input file only")
+    missing = [f for f in inputs if not os.path.exists(f)]
+    if missing:
+        p.error(f"not found: {missing[0]}")
 
     knee0, knee1 = 150, 205
     if args.knee is not None:
@@ -100,20 +110,32 @@ def main(argv=None):
         p.error(str(e))
 
     from .convert import convert
-    try:
-        res = convert(
-            args.input, out_path,
-            dpi=args.dpi, margin=args.margin, jpeg_quality=args.jpeg_quality,
-            use_ocr=use_ocr, clean_tone=clean_tone,
-            knee0=knee0, knee1=knee1, workers=args.workers,
-            pages=pages, cache_path=cache, comic=args.comic,
-            txt_path=os.path.join(
-                os.path.dirname(os.path.abspath(out_path)),
-                os.path.basename(base) + ".txt") if want_txt else None)
-    except (ValueError, RuntimeError) as e:
-        print(f"error: {e}", file=sys.stderr)
+    failed, page_errors = [], False
+    for n, src in enumerate(inputs, 1):
+        if len(inputs) > 1:
+            print(f"\n[{n}/{len(inputs)}] {os.path.basename(src)}")
+        base, _ = os.path.splitext(src)
+        out_path = args.output or base + "_optimized.pdf"
+        cache = None if args.no_cache else base + ".analysis.json"
+        try:
+            res = convert(
+                src, out_path,
+                dpi=args.dpi, margin=args.margin, jpeg_quality=args.jpeg_quality,
+                use_ocr=use_ocr, clean_tone=clean_tone,
+                knee0=knee0, knee1=knee1, workers=args.workers,
+                pages=pages, cache_path=cache, comic=args.comic,
+                txt_path=os.path.join(
+                    os.path.dirname(os.path.abspath(out_path)),
+                    os.path.basename(base) + ".txt") if want_txt else None)
+            page_errors = page_errors or bool(res["errors"])
+        except (ValueError, RuntimeError) as e:
+            print(f"error: {src}: {e}", file=sys.stderr)
+            failed.append(src)
+    if failed:
+        print(f"\n{len(failed)}/{len(inputs)}권 실패: "
+              f"{[os.path.basename(f) for f in failed]}", file=sys.stderr)
         return 2
-    return 1 if res["errors"] else 0
+    return 1 if page_errors else 0
 
 
 if __name__ == "__main__":
